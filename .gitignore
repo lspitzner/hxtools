@@ -1,0 +1,9 @@
+/dist
+/dist-newstyle
+.stack-work/
+.ghc.environment.*
+cabal.project.local
+/result*
+/nix/seaaye-cache
+/nix/gcroots
+/nix/ci-out
