@@ -338,15 +338,16 @@ main = B.mainFromCmdParser $ do
   conflateStderr  <- B.addSimpleBoolFlag "" ["conflate-err"] mempty
   conflateBoth    <- B.addSimpleBoolFlag "" ["conflate"] mempty
   summarize       <- B.addFlagStringParams "s" ["summarize"] "STRING" mempty
-  section         <- B.addSimpleBoolFlag "" ["section"] mempty
+  -- section         <- B.addSimpleBoolFlag "" ["section"] mempty
   B.reorderStop
   rest <- B.addParamRestOfInput "COMMAND" mempty <&> \case
     '-' : '-' : ' ' : r -> r
     '-'       : '-' : r -> r
     r                   -> r
+  helpDesc <- B.peekCmdDesc
   B.addCmdImpl $ if null rest
     then do
-      print "help"
+      print $ B.ppHelpShallow helpDesc
     else withConcurrentOutput $ do
       setLocaleEncoding utf8
       termSizeMay <- Ansi.getTerminalSize
@@ -387,7 +388,7 @@ main = B.mainFromCmdParser $ do
               , c_summarize   = summarize
               , c_outFile     = Nothing
               , c_errFile     = Nothing
-              , c_sectionChar = if section then Just '#' else Nothing
+              , c_sectionChar = Nothing -- if section then Just '#' else Nothing
               , c_termWidth   = termSizeMay <&> snd
               }
             , s_regions      = [line0]
