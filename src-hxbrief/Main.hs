@@ -28,14 +28,6 @@ import           Control.Monad.Trans.State.Strict
                                                 , modify
                                                 , put
                                                 )
-import           Lens.Micro                     ( (<&>) )
-import           System.Clock                   ( Clock(RealtimeCoarse)
-                                                , TimeSpec
-                                                , diffTimeSpec
-                                                , getTime
-                                                , toNanoSecs
-                                                )
-
 import           Data.List                      ( isInfixOf
                                                 , isPrefixOf
                                                 , isSuffixOf
@@ -45,6 +37,13 @@ import           Data.Maybe                     ( listToMaybe
                                                 )
 import           GHC.IO.Encoding                ( setLocaleEncoding
                                                 , utf8
+                                                )
+import           Lens.Micro                     ( (<&>) )
+import           System.Clock                   ( Clock(RealtimeCoarse)
+                                                , TimeSpec
+                                                , diffTimeSpec
+                                                , getTime
+                                                , toNanoSecs
                                                 )
 import qualified System.Console.ANSI           as Ansi
 import           System.Console.Concurrent      ( errorConcurrent
