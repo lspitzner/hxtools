@@ -10,6 +10,9 @@ where
 import           Control.Concurrent             ( threadDelay )
 import qualified Control.Concurrent.Async      as A
 import           Control.Concurrent.MVar
+import           Control.Exception              ( IOException
+                                                , try
+                                                )
 import           Control.Monad                  ( forM_
                                                 , forever
                                                 , replicateM
@@ -349,7 +352,10 @@ main = B.mainFromCmdParser $ do
       print $ B.ppHelpShallow helpDesc
     else withConcurrentOutput $ do
       setLocaleEncoding utf8
-      termSizeMay <- Ansi.getTerminalSize
+      termWidthMay <- try Ansi.getTerminalSize <&> \case
+        Left  (_e :: IOException) -> Nothing
+        Right Nothing             -> Nothing
+        Right (Just (_, w))       -> Just w
       let stdoutCheckCount =
             length
               $  [ () | keepStdout || keepBoth ]
@@ -388,7 +394,7 @@ main = B.mainFromCmdParser $ do
               , c_outFile     = Nothing
               , c_errFile     = Nothing
               , c_sectionChar = Nothing -- if section then Just '#' else Nothing
-              , c_termWidth   = termSizeMay <&> snd
+              , c_termWidth   = termWidthMay
               }
             , s_regions      = [line0]
             , s_history      = []
