@@ -10,7 +10,11 @@ where
 import           Control.Concurrent             ( threadDelay )
 import qualified Control.Concurrent.Async      as A
 import           Control.Concurrent.MVar
-import           Control.Exception              ( IOException
+import           Control.Exception              ( AsyncException(UserInterrupt)
+                                                , IOException
+                                                , catch
+                                                , mask
+                                                , throwIO
                                                 , try
                                                 )
 import           Control.Monad                  ( forM_
@@ -350,9 +354,9 @@ main = B.mainFromCmdParser $ do
   B.addCmdImpl $ if null rest
     then do
       print $ B.ppHelpShallow helpDesc
-    else withConcurrentOutput $ do
-      setLocaleEncoding utf8
-      termWidthMay <- try Ansi.getTerminalSize <&> \case
+    else withConcurrentOutput $ mask $ \restore -> do
+      restore $ setLocaleEncoding utf8
+      termWidthMay <- restore $ try Ansi.getTerminalSize <&> \case
         Left  (_e :: IOException) -> Nothing
         Right Nothing             -> Nothing
         Right (Just (_, w))       -> Just w
@@ -366,7 +370,7 @@ main = B.mainFromCmdParser $ do
               $  [ () | keepStderr || keepBoth ]
               ++ [ () | conflateStderr || conflateBoth ]
               ++ [ () | dropStderr || dropBoth ]
-      (lastLine, ec) <- displayConsoleRegions $ do
+      (lastLine, ecMay) <- displayConsoleRegions $ do
         initialState <- do
           startTime <- getTime RealtimeCoarse
           line0     <- openConsoleRegion Linear
@@ -407,7 +411,17 @@ main = B.mainFromCmdParser $ do
             }
         stateVar :: MVar State <- newMVar initialState
 
-        let withCreateProcess f =
+        let outHandler out = forever $ do
+              x <- hGetLine out
+              modifyMVar_ stateVar (processLine (StdOut, x))
+        let errHandler err = forever $ do
+              x <- hGetLine err
+              modifyMVar_ stateVar (processLine (StdErr, x))
+        let tickHandler = forever $ do
+              threadDelay 333333
+              modifyMVar_ stateVar $ execStateT $ updateStateLine False
+
+        let mainBlock =
               P.withCreateProcess
                   ((P.shell rest) { P.std_in  = P.CreatePipe
                                   , P.std_out = P.CreatePipe
@@ -415,49 +429,43 @@ main = B.mainFromCmdParser $ do
                                   }
                   )
                 $ \(Just inp) (Just out) (Just err) hdl -> do
-                    f inp out err hdl
+                    A.withAsync (outHandler out) $ \outAsync ->
+                      A.withAsync (errHandler err) $ \errAsync ->
+                        A.withAsync tickHandler $ \_tickAsync -> do
+                          hClose inp
+                          ec <- P.waitForProcess hdl
+                          _a <- A.waitCatch outAsync
+                          _b <- A.waitCatch errAsync
+                          pure (Just ec)
+        ecMay <- restore mainBlock `catch` (\UserInterrupt -> pure Nothing)
+        modifyMVar_ stateVar $ execStateT $ do
+          finalLines <- gets s_lines
+          countOut   <- gets s_countOut
+          countErr   <- gets s_countErr
+          if countOut == 0 && countErr == 1
+            then do
+              modify
+                $ \s -> s { s_config = (s_config s) { c_keepStderr = Keep } }
+              reverse finalLines `forM_` dispatchLine
+            else do
+              -- we leave the lines in final state, but process them
+              reverse finalLines `forM_` summarizeLines
+              gets s_summary >>= \case
+                Nothing              -> pure ()
+                Just (line, Nothing) -> dispatchLine line
+                Just ((kind, _), Just (i, pat, prefix)) ->
+                  dispatchPat kind i pat prefix
+        finalState <- takeMVar stateVar
+        line       <- evalStateT (stateLine False False) finalState
+        s_regions finalState `forM_` \r -> closeConsoleRegion r
+        let lastLine = case ecMay of
+              Nothing -> fGrey ++ line ++ ", UserInterrupt\n"
+              Just ec -> fGrey ++ line ++ ", ec=" ++ showEC ec ++ "\n"
+        pure (lastLine, ecMay)
 
-        withCreateProcess $ \inp out err hdl -> do
-          hClose inp
-          let outHandler = forever $ do
-                x <- hGetLine out
-                modifyMVar_ stateVar (processLine (StdOut, x))
-          let errHandler = forever $ do
-                x <- hGetLine err
-                modifyMVar_ stateVar (processLine (StdErr, x))
-          let tickHandler = forever $ do
-                threadDelay 333333
-                modifyMVar_ stateVar $ execStateT $ updateStateLine False
-          A.withAsync outHandler $ \outAsync ->
-            A.withAsync errHandler $ \errAsync ->
-              A.withAsync tickHandler $ \_tickAsync -> do
-                ec <- P.waitForProcess hdl
-                _a <- A.waitCatch outAsync
-                _b <- A.waitCatch errAsync
-                modifyMVar_ stateVar $ execStateT $ do
-                  finalLines <- gets s_lines
-                  countOut   <- gets s_countOut
-                  countErr   <- gets s_countErr
-                  if countOut == 0 && countErr == 1
-                    then do
-                      modify $ \s ->
-                        s { s_config = (s_config s) { c_keepStderr = Keep } }
-                      reverse finalLines `forM_` dispatchLine
-                    else do
-                      -- we leave the lines in final state, but process them
-                      reverse finalLines `forM_` summarizeLines
-                      gets s_summary >>= \case
-                        Nothing              -> pure ()
-                        Just (line, Nothing) -> dispatchLine line
-                        Just ((kind, _), Just (i, pat, prefix)) ->
-                          dispatchPat kind i pat prefix
-                finalState <- takeMVar stateVar
-                line       <- evalStateT (stateLine False False) finalState
-                s_regions finalState `forM_` \r -> closeConsoleRegion r
-                -- outputConcurrent (show a ++ "\n")
-                -- outputConcurrent (show b ++ "\n")
-                pure (fGrey ++ line ++ ", ec=" ++ showEC ec ++ "\n", ec)
       flushConcurrentOutput
       outputConcurrent lastLine
-      exitWith ec
+      case ecMay of
+        Nothing -> throwIO UserInterrupt -- essentially re-throw
+        Just ec -> exitWith ec
 
