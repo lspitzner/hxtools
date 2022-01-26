@@ -65,7 +65,10 @@ import           System.Console.Regions         ( ConsoleRegion
                                                 , openConsoleRegion
                                                 , setConsoleRegion
                                                 )
-import           System.Exit                    ( exitWith )
+import qualified System.Environment
+import           System.Exit                    ( exitSuccess
+                                                , exitWith
+                                                )
 import           System.IO                      ( Handle
                                                 , hClose
                                                 , hGetLine
@@ -351,10 +354,19 @@ main = B.mainFromCmdParser $ do
     '-'       : '-' : r -> r
     r                   -> r
   helpDesc <- B.peekCmdDesc
-  B.addCmdImpl $ if null rest
-    then do
+  B.addCmdImpl $ do
+    when (null rest) $ do
       print $ B.ppHelpShallow helpDesc
-    else withConcurrentOutput $ mask $ \restore -> do
+      exitSuccess
+    recursiveMay <- System.Environment.lookupEnv "IN_HXBRIEF"
+    case recursiveMay of
+      Just _ -> do
+        -- TODO: Arguably, we should do _something_ here, e.g. summarizing
+        --       and filtering etc.
+        P.callCommand rest
+        exitSuccess
+      Nothing -> pure ()
+    withConcurrentOutput $ mask $ \restore -> do
       restore $ setLocaleEncoding utf8
       termWidthMay <- restore $ try Ansi.getTerminalSize <&> \case
         Left  (_e :: IOException) -> Nothing
@@ -423,10 +435,11 @@ main = B.mainFromCmdParser $ do
 
         let mainBlock =
               P.withCreateProcess
-                  ((P.shell rest) { P.std_in  = P.CreatePipe
-                                  , P.std_out = P.CreatePipe
-                                  , P.std_err = P.CreatePipe
-                                  }
+                  ((P.shell ("IN_HXBRIEF=1 " ++ rest))
+                    { P.std_in  = P.CreatePipe
+                    , P.std_out = P.CreatePipe
+                    , P.std_err = P.CreatePipe
+                    }
                   )
                 $ \(Just inp) (Just out) (Just err) hdl -> do
                     A.withAsync (outHandler out) $ \outAsync ->
