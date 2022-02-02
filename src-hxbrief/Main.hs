@@ -101,12 +101,6 @@ data Config = Config
   , c_termWidth   :: Maybe Int
   }
 
--- config TODO:
--- - option to tee to file, or file-out + file-err
--- - parse sections?
--- - allow infix summaries?
--- - drop to "less" environment on error (interactive)
-
 data State = State
   { s_config       :: Config
   , s_regions      :: [ConsoleRegion]
