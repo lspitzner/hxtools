@@ -83,6 +83,15 @@ import           Util
 data StreamKind = StdOut | StdErr
   deriving (Eq, Show)
 
+data JoinMode
+  = JoinAll
+  | JoinSpecific
+
+data JoinedInfo
+  = JoinedNot
+  | JoinedAll Int
+  | Joined Int String [String] -- pattern, prefix
+
 data KeepMode
   = Drop -- dont forward
   | Keep -- forward each line, apart from summaries
@@ -94,7 +103,7 @@ data Config = Config
   , c_lines       :: Int
   , c_keepStdout  :: KeepMode
   , c_keepStderr  :: KeepMode
-  , c_summarize   :: [String]
+  , c_summarize   :: [(JoinMode, String)]
   , c_outFile     :: Maybe Handle
   , c_errFile     :: Maybe Handle
   , c_sectionChar :: Maybe Char
@@ -110,7 +119,7 @@ data State = State
   , s_countErr     :: Int
   , s_globalStart  :: TimeSpec
   , s_lastLineTime :: TimeSpec
-  , s_summary :: Maybe ((StreamKind, String), Maybe (Int, String, [String]))
+  , s_summary      :: Maybe ((StreamKind, String), JoinedInfo)
   }
 
 
@@ -177,7 +186,7 @@ showPattern p = p >>= \case
   x   -> [x]
 
 dispatchPat :: StreamKind -> Int -> String -> [String] -> StateT State IO ()
-dispatchPat oldKind i oldPat prefix = do
+dispatchPat oldKind i pat prefix = do
   let kindStr = case oldKind of
         StdOut -> "stdout"
         StdErr -> "stderr"
@@ -187,10 +196,10 @@ dispatchPat oldKind i oldPat prefix = do
         in  if
               | i == 1 && la < 70
               -> a
-              | la > length oldPat && la < 70
+              | la > length pat && la < 70
               -> a ++ setFGColorVivid Ansi.Yellow ++ " …" ++ fReset
               | otherwise
-              -> showPattern oldPat
+              -> showPattern pat
   let prettyPat =
         fGrey
           ++ "("
@@ -207,36 +216,94 @@ dispatchPat oldKind i oldPat prefix = do
     StdOut -> when (c_keepStdout conf /= Drop) $ outputConcurrent prettyPat
     StdErr -> when (c_keepStderr conf /= Drop) $ errorConcurrent prettyPat
 
+dispatchSkipped :: StreamKind -> Int -> StateT State IO ()
+dispatchSkipped oldKind i = do
+  let kindStr = case oldKind of
+        StdOut -> "stdout"
+        StdErr -> "stderr"
+  let prettyPat =
+        fGrey
+          ++ "("
+          ++ show i
+          ++ " lines "
+          ++ kindStr
+          ++ ")"
+          ++ fReset
+          ++ " …skipped…\n"
+  conf <- gets s_config
+  liftIO $ case oldKind of
+    StdOut -> when (c_keepStdout conf /= Drop) $ outputConcurrent prettyPat
+    StdErr -> when (c_keepStderr conf /= Drop) $ errorConcurrent prettyPat
+
+
 summarizeLines :: (StreamKind, String) -> StateT State IO ()
 summarizeLines cur@(kind, line) = do
   s <- get
   let conf = s_config s
   let match = firstJust
-        (\pat -> if matchPattern pat line then Just pat else Nothing)
+        (\joiner@(_, pat) ->
+          if matchPattern pat line then Just joiner else Nothing
+        )
         (c_summarize conf ++ case kind of
-          StdOut -> [ "*" | c_keepStdout conf == Conflate ]
-          StdErr -> [ "*" | c_keepStderr conf == Conflate ]
+          StdOut -> [ (JoinAll, "*") | c_keepStdout conf == Conflate ]
+          StdErr -> [ (JoinAll, "*") | c_keepStderr conf == Conflate ]
         )
   case (s_summary s, match) of
-    (Nothing, _) ->
-      put s { s_summary = Just (cur, match <&> \pat -> (1, pat, words line)) }
-    (Just (oldLine, Nothing), _) -> do
+    (Nothing, _) -> put s
+      { s_summary = Just
+                      ( cur
+                      , case match of
+                        Nothing                  -> JoinedNot
+                        Just (JoinAll     , _  ) -> JoinedAll 1
+                        Just (JoinSpecific, pat) -> Joined 1 pat (words line)
+                      )
+      }
+    (Just (oldLine, JoinedNot), _) -> do
       dispatchLine oldLine
-      put s { s_summary = Just (cur, match <&> \pat -> (1, pat, words line)) }
-    (Just ((oldKind, _), Just (i, oldPat, oldPrefix)), Nothing) -> do
+      put s
+        { s_summary = Just
+                        ( cur
+                        , case match of
+                          Nothing                  -> JoinedNot
+                          Just (JoinAll     , _  ) -> JoinedAll 1
+                          Just (JoinSpecific, pat) -> Joined 1 pat (words line)
+                        )
+        }
+    (Just ((oldKind, _), JoinedAll i), Nothing) -> do
+      dispatchSkipped oldKind i
+      put s { s_summary = Just (cur, JoinedNot) }
+    (Just ((oldKind, _), Joined i oldPat oldPrefix), Nothing) -> do
       dispatchPat oldKind i oldPat oldPrefix
-      put s { s_summary = Just (cur, Nothing) }
-    (Just ((oldKind, _), Just (i, oldPat, oldPrefix)), Just pat) -> if
-      | oldPat == pat && kind == oldKind -> do
-        let newPrefix =
-              let go [] = []
-                  go ((a, b) : rest) | a == b    = a : go rest
-                                     | otherwise = []
-              in  go $ zip oldPrefix (words line)
-        put s { s_summary = Just (cur, Just (i + 1, pat, newPrefix)) }
-      | otherwise -> do
-        dispatchPat oldKind i oldPat oldPrefix
-        put s { s_summary = Just (cur, Just (1, pat, words line)) }
+      put s { s_summary = Just (cur, JoinedNot) }
+    (Just ((oldKind, _), JoinedAll i), Just joiner) -> case joiner of
+      (JoinAll, _)
+        | kind == oldKind -> do
+          put s { s_summary = Just (cur, JoinedAll (i + 1)) }
+        | otherwise -> do
+          dispatchSkipped oldKind i
+          put s { s_summary = Just (cur, JoinedAll 1) }
+      (JoinSpecific, pat) -> do
+        dispatchSkipped oldKind i
+        put s { s_summary = Just (cur, Joined 1 pat (words line)) }
+    (Just ((oldKind, _), Joined i oldPat oldPrefix), Just joiner) ->
+      case joiner of
+        (JoinSpecific, pat) | oldPat == pat && kind == oldKind -> do
+          let newPrefix =
+                let go [] = []
+                    go ((a, b) : rest) | a == b    = a : go rest
+                                       | otherwise = []
+                in  go $ zip oldPrefix (words line)
+          put s { s_summary = Just (cur, Joined (i + 1) pat newPrefix) }
+        _ -> do
+          dispatchPat oldKind i oldPat oldPrefix
+          put s
+            { s_summary = Just
+                            ( cur
+                            , case joiner of
+                              (JoinAll     , _  ) -> JoinedAll 1
+                              (JoinSpecific, pat) -> Joined 1 pat (words line)
+                            )
+            }
 
 
 processLine :: (StreamKind, String) -> State -> IO State
@@ -266,11 +333,16 @@ processLine newPair@(kind, _) = execStateT $ do
     summary <- gets s_summary
     pure $ case summary of
       Nothing -> prettyLines
-      Just ((StdOut, line), Nothing) ->
+      Just ((StdOut, line), JoinedNot) ->
         (fWhiteDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
-      Just ((StdOut, line), Just (1, _, _)) ->
+      Just ((StdOut, line), JoinedAll 1) ->
         (fWhiteDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
-      Just ((StdOut, _), Just (i, pat, _)) ->
+      Just ((StdOut, _line), JoinedAll i) ->
+        (fWhiteDis ++ "│ " ++ fReset ++ "…skipped… (" ++ show i ++ " lines)")
+          : prettyLines
+      Just ((StdOut, line), Joined 1 _ _) ->
+        (fWhiteDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
+      Just ((StdOut, _), Joined i pat _) ->
         (  fWhiteDis
           ++ "│ "
           ++ fReset
@@ -280,11 +352,16 @@ processLine newPair@(kind, _) = execStateT $ do
           ++ " lines)"
           )
           : prettyLines
-      Just ((StdErr, line), Nothing) ->
+      Just ((StdErr, line), JoinedNot) ->
         (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
-      Just ((StdErr, line), Just (1, _, _)) ->
+      Just ((StdErr, line), JoinedAll 1) ->
         (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
-      Just ((StdErr, _), Just (i, pat, _)) ->
+      Just ((StdErr, _line), JoinedAll i) ->
+        (fRedDis ++ "│ " ++ fReset ++ "…skipped… (" ++ show i ++ " lines)")
+          : prettyLines
+      Just ((StdErr, line), Joined 1 _ _) ->
+        (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
+      Just ((StdErr, _), Joined i pat _) ->
         (  fRedDis
           ++ "│ "
           ++ fReset
@@ -340,7 +417,8 @@ main = B.mainFromCmdParser $ do
   conflateStdout  <- B.addSimpleBoolFlag "" ["conflate-out"] mempty
   conflateStderr  <- B.addSimpleBoolFlag "" ["conflate-err"] mempty
   conflateBoth    <- B.addSimpleBoolFlag "" ["conflate"] mempty
-  summarize       <- B.addFlagStringParams "s" ["summarize"] "STRING" mempty
+  summarize       <- B.addFlagStringParams "s" ["summarize"] "PATTERN" mempty
+  skip            <- B.addFlagStringParams "x" ["skip"] "PATTERN" mempty
   -- section         <- B.addSimpleBoolFlag "" ["section"] mempty
   B.reorderStop
   rest <- B.addParamRestOfInput "COMMAND" mempty <&> \case
@@ -400,7 +478,8 @@ main = B.mainFromCmdParser $ do
                                   | conflateStderr || conflateBoth -> Conflate
                                   | dropStderr || dropBoth -> Drop
                                   | otherwise -> Keep
-              , c_summarize   = summarize
+              , c_summarize   = (summarize <&> \x -> (JoinSpecific, x))
+                                  ++ (skip <&> \x -> (JoinAll, x))
               , c_outFile     = Nothing
               , c_errFile     = Nothing
               , c_sectionChar = Nothing -- if section then Just '#' else Nothing
@@ -458,9 +537,10 @@ main = B.mainFromCmdParser $ do
               -- we leave the lines in final state, but process them
               reverse finalLines `forM_` summarizeLines
               gets s_summary >>= \case
-                Nothing              -> pure ()
-                Just (line, Nothing) -> dispatchLine line
-                Just ((kind, _), Just (i, pat, prefix)) ->
+                Nothing                       -> pure ()
+                Just (line     , JoinedNot  ) -> dispatchLine line
+                Just ((kind, _), JoinedAll i) -> dispatchSkipped kind i
+                Just ((kind, _), Joined i pat prefix) ->
                   dispatchPat kind i pat prefix
         finalState <- takeMVar stateVar
         line       <- evalStateT (stateLine False False) finalState
