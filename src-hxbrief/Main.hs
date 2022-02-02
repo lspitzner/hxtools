@@ -281,9 +281,9 @@ processLine newPair@(kind, _) = execStateT $ do
           )
           : prettyLines
       Just ((StdErr, line), Nothing) ->
-        (fRedDis ++ "│ " ++ ellipse line) : prettyLines
+        (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
       Just ((StdErr, line), Just (1, _, _)) ->
-        (fRedDis ++ "│ " ++ ellipse line) : prettyLines
+        (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
       Just ((StdErr, _), Just (i, pat, _)) ->
         (  fRedDis
           ++ "│ "
