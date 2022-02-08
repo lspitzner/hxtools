@@ -570,7 +570,7 @@ main = B.mainFromCmdParser $ do
         line       <- evalStateT (stateLine False False) finalState
         s_regions finalState `forM_` \r -> closeConsoleRegion r
         let lastLine = case ecMay of
-              Nothing -> fGrey ++ line ++ ", UserInterrupt\n"
+              Nothing -> fGrey ++ line ++ ", UserInterrupt\n" ++ fReset
               Just ec -> fGrey ++ line ++ ", ec=" ++ showEC ec ++ "\n"
         pure (lastLine, ecMay)
 
