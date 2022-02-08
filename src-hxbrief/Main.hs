@@ -12,6 +12,7 @@ import qualified Control.Concurrent.Async      as A
 import           Control.Concurrent.MVar
 import           Control.Exception              ( AsyncException(UserInterrupt)
                                                 , IOException
+                                                , bracket
                                                 , catch
                                                 , mask
                                                 , throwIO
@@ -42,9 +43,7 @@ import           Data.List                      ( isInfixOf
 import           Data.Maybe                     ( listToMaybe
                                                 , mapMaybe
                                                 )
-import           GHC.IO.Encoding                ( setLocaleEncoding
-                                                , utf8
-                                                )
+import qualified GHC.IO.Encoding
 import           Lens.Micro                     ( (<&>) )
 import           System.Clock                   ( Clock(RealtimeCoarse)
                                                 , TimeSpec
@@ -69,10 +68,8 @@ import qualified System.Environment
 import           System.Exit                    ( exitSuccess
                                                 , exitWith
                                                 )
-import           System.IO                      ( Handle
-                                                , hClose
-                                                , hGetLine
-                                                )
+import           System.IO                      ( Handle )
+import qualified System.IO
 import qualified System.Process                as P
 import           Text.Printf                    ( printf )
 import qualified UI.Butcher.Monadic            as B
@@ -438,12 +435,28 @@ main = B.mainFromCmdParser $ do
         P.callCommand rest
         exitSuccess
       Nothing -> pure ()
-    withConcurrentOutput $ mask $ \restore -> do
-      restore $ setLocaleEncoding utf8
-      termWidthMay <- restore $ try Ansi.getTerminalSize <&> \case
-        Left  (_e :: IOException) -> Nothing
-        Right Nothing             -> Nothing
-        Right (Just (_, w))       -> Just w
+    let mainBracket = bracket
+          (do
+            System.IO.hSetEcho System.IO.stdin False
+            System.IO.hSetBuffering System.IO.stdin System.IO.LineBuffering
+            GHC.IO.Encoding.setLocaleEncoding GHC.IO.Encoding.utf8
+            pure ()
+          )
+          (\() -> do
+            System.IO.hSetEcho System.IO.stdin True
+          )
+    withConcurrentOutput $ mainBracket $ \() -> mask $ \restore -> do
+      -- restore $ GHC.IO.Encoding.setFileSystemEncoding GHC.IO.Encoding.utf8
+      -- restore $ System.IO.hSetEncoding System.IO.stdout GHC.IO.Encoding.utf8
+      -- restore $ System.IO.hSetEncoding System.IO.stderr GHC.IO.Encoding.utf8
+      termWidthMay <- restore $ do
+        support <- Ansi.hSupportsANSI System.IO.stdin
+        if support
+          then try Ansi.getTerminalSize <&> \case
+            Left  (_e :: IOException) -> Nothing
+            Right Nothing             -> Nothing
+            Right (Just (_, w))       -> Just w
+          else pure Nothing
       let stdoutCheckCount =
             length
               $  [ () | keepStdout || keepBoth ]
@@ -496,11 +509,21 @@ main = B.mainFromCmdParser $ do
             }
         stateVar :: MVar State <- newMVar initialState
 
+        let inHandler inp =
+              let go = do
+                    x <- try getLine
+                    case x of
+                      Left  (_ :: IOException) -> System.IO.hClose inp
+                      Right line               -> do
+                        System.IO.hPutStrLn inp line
+                        System.IO.hFlush inp
+                        go
+              in  go
         let outHandler out = forever $ do
-              x <- hGetLine out
+              x <- System.IO.hGetLine out
               modifyMVar_ stateVar (processLine (StdOut, x))
         let errHandler err = forever $ do
-              x <- hGetLine err
+              x <- System.IO.hGetLine err
               modifyMVar_ stateVar (processLine (StdErr, x))
         let tickHandler = forever $ do
               threadDelay 333333
@@ -515,14 +538,15 @@ main = B.mainFromCmdParser $ do
                     }
                   )
                 $ \(Just inp) (Just out) (Just err) hdl -> do
-                    A.withAsync (outHandler out) $ \outAsync ->
-                      A.withAsync (errHandler err) $ \errAsync ->
-                        A.withAsync tickHandler $ \_tickAsync -> do
-                          hClose inp
-                          ec <- P.waitForProcess hdl
-                          _a <- A.waitCatch outAsync
-                          _b <- A.waitCatch errAsync
-                          pure (Just ec)
+                    A.withAsync (inHandler inp) $ \inAsync ->
+                      A.withAsync (outHandler out) $ \outAsync ->
+                        A.withAsync (errHandler err) $ \errAsync ->
+                          A.withAsync tickHandler $ \_tickAsync -> do
+                            ec <- P.waitForProcess hdl
+                            A.cancel inAsync
+                            _a <- A.waitCatch outAsync
+                            _b <- A.waitCatch errAsync
+                            pure (Just ec)
         ecMay <- restore mainBlock `catch` (\UserInterrupt -> pure Nothing)
         modifyMVar_ stateVar $ execStateT $ do
           finalLines <- gets s_lines
