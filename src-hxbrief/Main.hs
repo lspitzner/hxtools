@@ -452,10 +452,7 @@ main = B.mainFromCmdParser $ do
       termWidthMay <- restore $ do
         support <- Ansi.hSupportsANSI System.IO.stdin
         if support
-          then try Ansi.getTerminalSize <&> \case
-            Left  (_e :: IOException) -> Nothing
-            Right Nothing             -> Nothing
-            Right (Just (_, w))       -> Just w
+          then fmap snd <$> Ansi.getTerminalSize
           else pure Nothing
       let stdoutCheckCount =
             length
