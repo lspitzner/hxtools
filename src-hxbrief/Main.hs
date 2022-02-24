@@ -70,9 +70,12 @@ import qualified System.Environment
 import           System.Exit                    ( exitSuccess
                                                 , exitWith
                                                 )
-import           System.IO                      ( Handle )
+import           System.IO                      ( Handle
+                                                , IOMode(WriteMode)
+                                                )
 import qualified System.IO
 import qualified System.Process                as P
+import qualified Text.PrettyPrint.HughesPJ     as PP
 import           Text.Printf                    ( printf )
 import qualified UI.Butcher.Monadic            as B
 
@@ -421,6 +424,18 @@ main = B.mainFromCmdParser $ do
   summarize       <- B.addFlagStringParams "s" ["summarize"] "PATTERN" mempty
   skip            <- B.addFlagStringParams "x" ["skip"] "PATTERN" mempty
   omitSummary     <- B.addSimpleBoolFlag "" ["omit-summary"] mempty
+  tee             <- B.addFlagStringParams
+    ""
+    ["tee"]
+    "BASENAMEBASEPATH"
+    ( B.flagHelp
+    $ PP.text "Write copy of stdout/stderr to BASEPATH.{out/err}.txt"
+    )
+  teeBoth <- B.addFlagStringParams
+    ""
+    ["tee-both"]
+    "FILENAMEFILEPATH"
+    (B.flagHelp $ PP.text "Write copy of stdout and stderr to FILEPATH")
   -- section         <- B.addSimpleBoolFlag "" ["section"] mempty
   B.reorderStop
   rest <- B.addParamRestOfInputRaw "COMMAND" mempty <&> \case
@@ -448,12 +463,24 @@ main = B.mainFromCmdParser $ do
             System.IO.hSetEcho System.IO.stdin False
             System.IO.hSetBuffering System.IO.stdin System.IO.LineBuffering
             GHC.IO.Encoding.setLocaleEncoding GHC.IO.Encoding.utf8
-            pure ()
+            case (tee, teeBoth) of
+              ([]       , []) -> pure (Nothing, Nothing)
+              ([teeName], []) -> do
+                h1 <- System.IO.openFile (teeName ++ ".out.txt") WriteMode
+                h2 <- System.IO.openFile (teeName ++ ".err.txt") WriteMode
+                pure (Just h1, Just h2)
+              ([], [teeBothName]) -> do
+                h <- System.IO.openFile teeBothName WriteMode
+                pure (Just h, Just h)
+              _ -> error "too many/conflicting tee arguments!"
           )
-          (\() -> do
+          (\teeHandles -> do
+            fst teeHandles `forM_` System.IO.hClose
+            snd teeHandles `forM_` System.IO.hClose
+            -- ^ may be closed already, this is not an error according to docs!
             System.IO.hSetEcho System.IO.stdin True
           )
-    withConcurrentOutput $ mainBracket $ \() -> mask $ \restore -> do
+    withConcurrentOutput $ mainBracket $ \teeHandles -> mask $ \restore -> do
       -- restore $ GHC.IO.Encoding.setFileSystemEncoding GHC.IO.Encoding.utf8
       -- restore $ System.IO.hSetEncoding System.IO.stdout GHC.IO.Encoding.utf8
       -- restore $ System.IO.hSetEncoding System.IO.stderr GHC.IO.Encoding.utf8
@@ -524,9 +551,11 @@ main = B.mainFromCmdParser $ do
               in  go
         let outHandler out = forever $ do
               x <- System.IO.hGetLine out
+              fst teeHandles `forM_` \h -> System.IO.hPutStrLn h x
               modifyMVar_ stateVar (processLine (StdOut, x))
         let errHandler err = forever $ do
               x <- System.IO.hGetLine err
+              snd teeHandles `forM_` \h -> System.IO.hPutStrLn h x
               modifyMVar_ stateVar (processLine (StdErr, x))
         let tickHandler = forever $ do
               threadDelay 333333
