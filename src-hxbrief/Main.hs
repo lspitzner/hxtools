@@ -21,6 +21,7 @@ import           Control.Exception              ( AsyncException(UserInterrupt)
 import           Control.Monad                  ( forM_
                                                 , forever
                                                 , replicateM
+                                                , unless
                                                 , when
                                                 , zipWithM_
                                                 )
@@ -419,6 +420,7 @@ main = B.mainFromCmdParser $ do
   conflateBoth    <- B.addSimpleBoolFlag "" ["conflate"] mempty
   summarize       <- B.addFlagStringParams "s" ["summarize"] "PATTERN" mempty
   skip            <- B.addFlagStringParams "x" ["skip"] "PATTERN" mempty
+  omitSummary     <- B.addSimpleBoolFlag "" ["omit-summary"] mempty
   -- section         <- B.addSimpleBoolFlag "" ["section"] mempty
   B.reorderStop
   rest <- B.addParamRestOfInputRaw "COMMAND" mempty <&> \case
@@ -579,7 +581,7 @@ main = B.mainFromCmdParser $ do
         pure (lastLine, ecMay)
 
       flushConcurrentOutput
-      outputConcurrent lastLine
+      unless omitSummary $ outputConcurrent lastLine
       case ecMay of
         Nothing -> throwIO UserInterrupt -- essentially re-throw
         Just ec -> exitWith ec
