@@ -423,6 +423,7 @@ main = B.mainFromCmdParser $ do
   conflateBoth    <- B.addSimpleBoolFlag "" ["conflate"] mempty
   summarize       <- B.addFlagStringParams "s" ["summarize"] "PATTERN" mempty
   skip            <- B.addFlagStringParams "x" ["skip"] "PATTERN" mempty
+  label           <- B.addFlagStringParams "" ["label"] "STRING" mempty
   omitSummary     <- B.addSimpleBoolFlag "" ["omit-summary"] mempty
   tee             <- B.addFlagStringParams
     ""
@@ -503,7 +504,10 @@ main = B.mainFromCmdParser $ do
           line0     <- openConsoleRegion Linear
           pure State
             { s_config       = Config
-              { c_command     = unwords $ map quoteIfSpaces rest
+              { c_command     = case label of
+                                  []         -> unwords $ map quoteIfSpaces rest
+                                  [labelStr] -> labelStr
+                                  _          -> error "too many labels!"
               , c_lines       = numLines
               , c_keepStdout  = if
                                   | stdoutCheckCount > 1 -> error
