@@ -36,6 +36,7 @@ import           Control.Monad.Trans.State.Strict
                                                 , modify
                                                 , put
                                                 )
+import qualified Data.Char                     as Char
 import           Data.List                      ( isInfixOf
                                                 , isPrefixOf
                                                 , isSuffixOf
@@ -400,6 +401,8 @@ updateStateLine updateCur = do
     ++ fReset
     )
 
+quoteIfSpaces :: String -> String
+quoteIfSpaces s = if any Char.isSpace s then "\"" ++ s ++ "\"" else s
 
 main :: IO ()
 main = B.mainFromCmdParser $ do
@@ -418,21 +421,24 @@ main = B.mainFromCmdParser $ do
   skip            <- B.addFlagStringParams "x" ["skip"] "PATTERN" mempty
   -- section         <- B.addSimpleBoolFlag "" ["section"] mempty
   B.reorderStop
-  rest <- B.addParamRestOfInput "COMMAND" mempty <&> \case
-    '-' : '-' : ' ' : r -> r
-    '-'       : '-' : r -> r
-    r                   -> r
+  rest <- B.addParamRestOfInputRaw "COMMAND" mempty <&> \case
+    B.InputString ('-' : '-' : ' ' : r) -> words r
+    B.InputString ('-'       : '-' : r) -> words r
+    B.InputString (r                  ) -> words r
+    B.InputArgs   ("--" : r           ) -> r
+    B.InputArgs   r                     -> r
   helpDesc <- B.peekCmdDesc
   B.addCmdImpl $ do
     when (null rest) $ do
       print $ B.ppHelpShallow helpDesc
       exitSuccess
+    let (restPath : restArgs) = rest
     recursiveMay <- System.Environment.lookupEnv "IN_HXBRIEF"
     case recursiveMay of
       Just _ -> do
         -- TODO: Arguably, we should do _something_ here, e.g. summarizing
         --       and filtering etc.
-        P.callCommand rest
+        P.callProcess restPath restArgs
         exitSuccess
       Nothing -> pure ()
     let mainBracket = bracket
@@ -451,9 +457,7 @@ main = B.mainFromCmdParser $ do
       -- restore $ System.IO.hSetEncoding System.IO.stderr GHC.IO.Encoding.utf8
       termWidthMay <- restore $ do
         support <- Ansi.hSupportsANSI System.IO.stdin
-        if support
-          then fmap snd <$> Ansi.getTerminalSize
-          else pure Nothing
+        if support then fmap snd <$> Ansi.getTerminalSize else pure Nothing
       let stdoutCheckCount =
             length
               $  [ () | keepStdout || keepBoth ]
@@ -470,7 +474,7 @@ main = B.mainFromCmdParser $ do
           line0     <- openConsoleRegion Linear
           pure State
             { s_config       = Config
-              { c_command     = rest
+              { c_command     = unwords $ map quoteIfSpaces rest
               , c_lines       = numLines
               , c_keepStdout  = if
                                   | stdoutCheckCount > 1 -> error
@@ -525,14 +529,17 @@ main = B.mainFromCmdParser $ do
         let tickHandler = forever $ do
               threadDelay 333333
               modifyMVar_ stateVar $ execStateT $ updateStateLine False
+        innerEnv <- do
+          env <- System.Environment.getEnvironment
+          pure (env ++ [("IN_HXBRIEF", "1")])
 
         let mainBlock =
               P.withCreateProcess
-                  ((P.shell ("IN_HXBRIEF=1 " ++ rest))
-                    { P.std_in  = P.CreatePipe
-                    , P.std_out = P.CreatePipe
-                    , P.std_err = P.CreatePipe
-                    }
+                  ((P.proc restPath restArgs) { P.std_in  = P.CreatePipe
+                                              , P.std_out = P.CreatePipe
+                                              , P.std_err = P.CreatePipe
+                                              , P.env     = Just innerEnv
+                                              }
                   )
                 $ \(Just inp) (Just out) (Just err) hdl -> do
                     A.withAsync (inHandler inp) $ \inAsync ->
