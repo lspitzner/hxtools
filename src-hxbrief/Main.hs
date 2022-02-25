@@ -86,11 +86,13 @@ data StreamKind = StdOut | StdErr
   deriving (Eq, Show)
 
 data JoinMode
-  = JoinAll
+  = JoinYield
+  | JoinAll
   | JoinSpecific
 
 data JoinedInfo
   = JoinedNot
+  | JoinedYield
   | JoinedAll Int
   | Joined Int String [String] -- pattern, prefix
 
@@ -182,6 +184,13 @@ dispatchLine line@(kind, str) = do
       when (c_keepStderr conf /= Drop) $ errorConcurrent (fReset ++ str ++ "\n")
   modify $ \s -> s { s_history = line : s_history s }
 
+dispatchYielded :: (StreamKind, String) -> StateT State IO ()
+dispatchYielded line@(kind, str) = do
+  liftIO $ case kind of
+    StdOut -> outputConcurrent (fReset ++ str ++ "\n")
+    StdErr -> errorConcurrent (fReset ++ str ++ "\n")
+  modify $ \s -> s { s_history = line : s_history s }
+
 showPattern :: String -> String
 showPattern p = p >>= \case
   '*' -> setFGColorVivid Ansi.Yellow ++ "…" ++ fReset
@@ -256,6 +265,7 @@ summarizeLines cur@(kind, line) = do
                       ( cur
                       , case match of
                         Nothing                  -> JoinedNot
+                        Just (JoinYield   , _  ) -> JoinedYield
                         Just (JoinAll     , _  ) -> JoinedAll 1
                         Just (JoinSpecific, pat) -> Joined 1 pat (words line)
                       )
@@ -267,8 +277,24 @@ summarizeLines cur@(kind, line) = do
                         ( cur
                         , case match of
                           Nothing                  -> JoinedNot
+                          Just (JoinYield   , _  ) -> JoinedYield
                           Just (JoinAll     , _  ) -> JoinedAll 1
                           Just (JoinSpecific, pat) -> Joined 1 pat (words line)
+                        )
+        }
+    (Just (oldLine, JoinedYield), Nothing) -> do
+      dispatchYielded oldLine
+      put s { s_summary = Just (cur, JoinedNot) }
+    (Just (oldLine, JoinedYield), _) -> do
+      dispatchYielded oldLine
+      put s
+        { s_summary = Just
+                        ( cur
+                        , case match of
+                          Nothing                  -> JoinedNot
+                          Just (JoinAll     , _  ) -> JoinedAll 1
+                          Just (JoinSpecific, pat) -> Joined 1 pat (words line)
+                          Just (JoinYield   , _  ) -> JoinedYield
                         )
         }
     (Just ((oldKind, _), JoinedAll i), Nothing) -> do
@@ -278,6 +304,9 @@ summarizeLines cur@(kind, line) = do
       dispatchPat oldKind i oldPat oldPrefix
       put s { s_summary = Just (cur, JoinedNot) }
     (Just ((oldKind, _), JoinedAll i), Just joiner) -> case joiner of
+      (JoinYield, _pat) -> do
+        dispatchSkipped oldKind i
+        put s { s_summary = Just (cur, JoinedYield) }
       (JoinAll, _)
         | kind == oldKind -> do
           put s { s_summary = Just (cur, JoinedAll (i + 1)) }
@@ -302,6 +331,7 @@ summarizeLines cur@(kind, line) = do
             { s_summary = Just
                             ( cur
                             , case joiner of
+                              (JoinYield   , _  ) -> JoinedYield
                               (JoinAll     , _  ) -> JoinedAll 1
                               (JoinSpecific, pat) -> Joined 1 pat (words line)
                             )
@@ -354,7 +384,11 @@ processLine newPair@(kind, _) = execStateT $ do
           ++ " lines)"
           )
           : prettyLines
+      Just ((StdOut, line), JoinedYield) ->
+        (fWhiteDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
       Just ((StdErr, line), JoinedNot) ->
+        (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
+      Just ((StdErr, line), JoinedYield) ->
         (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
       Just ((StdErr, line), JoinedAll 1) ->
         (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
@@ -424,6 +458,7 @@ main = B.mainFromCmdParser $ do
   summarize       <- B.addFlagStringParams "s" ["summarize"] "PATTERN" mempty
   skip            <- B.addFlagStringParams "x" ["skip"] "PATTERN" mempty
   label           <- B.addFlagStringParams "" ["label"] "STRING" mempty
+  yield           <- B.addFlagStringParams "y" ["yield"] "PATTERN" mempty
   omitSummary     <- B.addSimpleBoolFlag "" ["omit-summary"] mempty
   tee             <- B.addFlagStringParams
     ""
@@ -525,8 +560,9 @@ main = B.mainFromCmdParser $ do
                                   | conflateStderr || conflateBoth -> Conflate
                                   | dropStderr || dropBoth -> Drop
                                   | otherwise -> Keep
-              , c_summarize   = (summarize <&> \x -> (JoinSpecific, x))
-                                  ++ (skip <&> \x -> (JoinAll, x))
+              , c_summarize   = (yield <&> \x -> (JoinYield, x))
+                                ++ (summarize <&> \x -> (JoinSpecific, x))
+                                ++ (skip <&> \x -> (JoinAll, x))
               , c_outFile     = Nothing
               , c_errFile     = Nothing
               , c_sectionChar = Nothing -- if section then Just '#' else Nothing
@@ -602,6 +638,7 @@ main = B.mainFromCmdParser $ do
               gets s_summary >>= \case
                 Nothing                       -> pure ()
                 Just (line     , JoinedNot  ) -> dispatchLine line
+                Just (line     , JoinedYield) -> dispatchYielded line
                 Just ((kind, _), JoinedAll i) -> dispatchSkipped kind i
                 Just ((kind, _), Joined i pat prefix) ->
                   dispatchPat kind i pat prefix
