@@ -86,13 +86,13 @@ data StreamKind = StdOut | StdErr
   deriving (Eq, Show)
 
 data JoinMode
-  = JoinYield
-  | JoinAll
-  | JoinSpecific
+  = JoinYield    -- i.e. don't join: We want to yield that exact line
+  | JoinAll      -- join with any other JoinAll-tagged lines/patterns
+  | JoinSpecific -- join with this pattern only
 
 data JoinedInfo
-  = JoinedNot
-  | JoinedYield
+  = JoinedNot     -- Line did not match any pattern
+  | JoinedYield   -- Line matched a yield pattern, must be forwarded as-is
   | JoinedAll Int
   | Joined Int String [String] -- pattern, prefix
 
