@@ -237,9 +237,9 @@ dispatchSkipped oldKind i = do
           ++ show i
           ++ " lines "
           ++ kindStr
-          ++ ")"
+          ++ ") …skipped…"
           ++ fReset
-          ++ " …skipped…\n"
+          ++ "\n"
   conf <- gets s_config
   liftIO $ case oldKind of
     StdOut -> when (c_keepStdout conf /= Drop) $ outputConcurrent prettyPat
@@ -369,7 +369,14 @@ processLine newPair@(kind, _) = execStateT $ do
       Just ((StdOut, line), JoinedAll 1) ->
         (fWhiteDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
       Just ((StdOut, _line), JoinedAll i) ->
-        (fWhiteDis ++ "│ " ++ fReset ++ "…skipped… (" ++ show i ++ " lines)")
+        (  fWhiteDis
+          ++ "│ "
+          ++ fGrey
+          ++ "…skipped… ("
+          ++ show i
+          ++ " lines)"
+          ++ fReset
+          )
           : prettyLines
       Just ((StdOut, line), Joined 1 _ _) ->
         (fWhiteDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
@@ -378,9 +385,11 @@ processLine newPair@(kind, _) = execStateT $ do
           ++ "│ "
           ++ fReset
           ++ showPattern pat
+          ++ fGrey
           ++ " ("
           ++ show i
           ++ " lines)"
+          ++ fReset
           )
           : prettyLines
       Just ((StdOut, line), JoinedYield) ->
@@ -392,7 +401,14 @@ processLine newPair@(kind, _) = execStateT $ do
       Just ((StdErr, line), JoinedAll 1) ->
         (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
       Just ((StdErr, _line), JoinedAll i) ->
-        (fRedDis ++ "│ " ++ fReset ++ "…skipped… (" ++ show i ++ " lines)")
+        (  fRedDis
+          ++ "│ "
+          ++ fGrey
+          ++ "…skipped… ("
+          ++ show i
+          ++ " lines)"
+          ++ fReset
+          )
           : prettyLines
       Just ((StdErr, line), Joined 1 _ _) ->
         (fRedDis ++ "│ " ++ fReset ++ ellipse line) : prettyLines
@@ -401,9 +417,11 @@ processLine newPair@(kind, _) = execStateT $ do
           ++ "│ "
           ++ fReset
           ++ showPattern pat
+          ++ fGrey
           ++ " ("
           ++ show i
           ++ " lines)"
+          ++ fReset
           )
           : prettyLines
   let showCount = min (c_lines conf) (length prettyLinesWithSummary)
