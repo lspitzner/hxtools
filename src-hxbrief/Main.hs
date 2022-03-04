@@ -103,7 +103,7 @@ data KeepMode
   deriving (Eq, Show)
 
 data Config = Config
-  { c_command     :: String
+  { c_label       :: String
   , c_lines       :: Int
   , c_keepStdout  :: KeepMode
   , c_keepStderr  :: KeepMode
@@ -155,8 +155,7 @@ stateLine updateCur showCur = do
                     diffFloat1
                     (s_countOut s)
                     (s_countErr s)
-
-  pure $ fGrey ++ outStr
+  pure $ outStr
 
 firstJust :: (a -> Maybe b) -> [a] -> Maybe b
 firstJust f = listToMaybe . mapMaybe f
@@ -433,9 +432,9 @@ updateStateLine updateCur = do
     (  fGrey
     ++ "╰─ … "
     ++ line
-    ++ " "
+    ++ ", "
     ++ setFGColorVivid Ansi.Blue
-    ++ (c_command $ s_config s)
+    ++ (c_label $ s_config s)
     ++ fReset
     )
 
@@ -539,8 +538,10 @@ main = B.mainFromCmdParser $ do
           line0     <- openConsoleRegion Linear
           pure State
             { s_config       = Config
-              { c_command     = case label of
-                                  []         -> unwords $ map quoteIfSpaces rest
+              { c_label       = case label of
+                                  [] ->
+                                    let full = unwords $ map quoteIfSpaces rest
+                                    in  if length full < 80 then full else head rest
                                   [labelStr] -> labelStr
                                   _          -> error "too many labels!"
               , c_lines       = numLines
@@ -645,9 +646,16 @@ main = B.mainFromCmdParser $ do
         finalState <- takeMVar stateVar
         line       <- evalStateT (stateLine False False) finalState
         s_regions finalState `forM_` \r -> closeConsoleRegion r
+        let prefix =
+              fGrey
+                ++ line
+                ++ ", "
+                ++ setFGColorVivid Ansi.Blue
+                ++ (c_label $ s_config finalState)
+                ++ fGrey
         let lastLine = case ecMay of
-              Nothing -> fGrey ++ line ++ ", UserInterrupt\n" ++ fReset
-              Just ec -> fGrey ++ line ++ ", ec=" ++ showEC ec ++ "\n"
+              Nothing -> prefix ++ ", UserInterrupt\n" ++ fReset
+              Just ec -> prefix ++ ", ec=" ++ showEC ec ++ "\n"
         pure (lastLine, ecMay)
 
       flushConcurrentOutput
