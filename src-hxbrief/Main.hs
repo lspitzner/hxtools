@@ -659,7 +659,7 @@ main = B.mainFromCmdParser $ do
         pure (lastLine, ecMay)
 
       flushConcurrentOutput
-      unless omitSummary $ outputConcurrent lastLine
+      unless omitSummary $ errorConcurrent lastLine
       case ecMay of
         Nothing -> throwIO UserInterrupt -- essentially re-throw
         Just ec -> exitWith ec
