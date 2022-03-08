@@ -170,8 +170,9 @@ matchPattern pat s = case break (== '*') pat of
   (start, '*' : rest) -> if any (== '*') rest
     then error "only one glob supported in patterns!"
     else start `isPrefixOf` s && rest `isSuffixOf` s
-  ("", "") -> error "empty pattern"
-  _        -> undefined
+  (""   , "") -> error "empty pattern"
+  (exact, "") -> exact == s
+  _           -> undefined
 
 dispatchLine :: (StreamKind, String) -> StateT State IO ()
 dispatchLine line@(kind, str) = do
