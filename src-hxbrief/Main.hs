@@ -610,11 +610,11 @@ main = B.mainFromCmdParser $ do
                         go
               in  go
         let outHandler out = forever $ do
-              x <- System.IO.hGetLine out
+              x <- filter (/= '\r') <$> System.IO.hGetLine out
               fst teeHandles `forM_` \h -> System.IO.hPutStrLn h x
               modifyMVar_ stateVar (processLine (StdOut, x))
         let errHandler err = forever $ do
-              x <- System.IO.hGetLine err
+              x <- filter (/= '\r') <$> System.IO.hGetLine err
               snd teeHandles `forM_` \h -> System.IO.hPutStrLn h x
               modifyMVar_ stateVar (processLine (StdErr, x))
         let tickHandler = forever $ do
