@@ -77,6 +77,7 @@ import qualified System.IO
 import qualified System.Process                as P
 import qualified Text.PrettyPrint.HughesPJ     as PP
 import           Text.Printf                    ( printf )
+import           Text.Read                      ( readMaybe )
 import qualified UI.Butcher.Monadic            as B
 
 import           Util
@@ -111,7 +112,7 @@ data Config = Config
   , c_outFile     :: Maybe Handle
   , c_errFile     :: Maybe Handle
   , c_sectionChar :: Maybe Char
-  , c_termWidth   :: Maybe Int
+  , c_termSize    :: Maybe (Int, Int)
   }
 
 data State = State
@@ -356,9 +357,9 @@ processLine newPair@(kind, _) = execStateT $ do
           let go _ ""       = ""
               go 0 _        = "…"
               go n (x : xs) = x : go (n - 1) xs
-          in  case c_termWidth conf of
-                Nothing -> id
-                Just w  -> go (w - 3)
+          in  case c_termSize conf of
+                Nothing     -> id
+                Just (_, w) -> go (w - 3)
     let prettyLines = reverse $ take (c_lines conf) curLines <&> \case
           (StdOut, line) -> fWhiteDis ++ "│ " ++ fReset ++ ellipse line
           (StdErr, line) -> fRedDis ++ "│ " ++ fReset ++ ellipse line
@@ -538,9 +539,14 @@ main = B.mainFromCmdParser $ do
       -- restore $ GHC.IO.Encoding.setFileSystemEncoding GHC.IO.Encoding.utf8
       -- restore $ System.IO.hSetEncoding System.IO.stdout GHC.IO.Encoding.utf8
       -- restore $ System.IO.hSetEncoding System.IO.stderr GHC.IO.Encoding.utf8
-      termWidthMay <- restore $ do
+      termSizeMay <- restore $ do
         support <- Ansi.hSupportsANSI System.IO.stdin
-        if support then fmap snd <$> Ansi.getTerminalSize else pure Nothing
+        if support
+          then Ansi.getTerminalSize
+          else do
+            envLines <- System.Environment.lookupEnv "LINES"
+            envCols  <- System.Environment.lookupEnv "COLUMNS"
+            pure $ (,) <$> (envLines >>= readMaybe) <*> (envCols >>= readMaybe)
       let stdoutCheckCount =
             length
               $  [ () | keepStdout || keepBoth ]
@@ -586,7 +592,7 @@ main = B.mainFromCmdParser $ do
               , c_outFile     = Nothing
               , c_errFile     = Nothing
               , c_sectionChar = Nothing -- if section then Just '#' else Nothing
-              , c_termWidth   = termWidthMay
+              , c_termSize    = termSizeMay
               }
             , s_regions      = [line0]
             , s_history      = []
