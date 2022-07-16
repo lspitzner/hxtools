@@ -465,6 +465,7 @@ main :: IO ()
 main = B.mainFromCmdParser $ do
   B.reorderStart
   numLines :: Int <- B.addFlagReadParam "n" ["lines"] "LINES" (B.flagDefault 5)
+  maxLines        <- B.addSimpleBoolFlag "" ["max-lines"] mempty
   keepStdout      <- B.addSimpleBoolFlag "" ["keep-out"] mempty
   keepStderr      <- B.addSimpleBoolFlag "" ["keep-err"] mempty
   keepBoth        <- B.addSimpleBoolFlag "" ["keep"] mempty
@@ -557,6 +558,16 @@ main = B.mainFromCmdParser $ do
               $  [ () | keepStderr || keepBoth ]
               ++ [ () | conflateStderr || conflateBoth ]
               ++ [ () | dropStderr || dropBoth ]
+      adjustedNumLines <- case termSizeMay of
+        Just (termLines, _) | maxLines -> pure $ max 1 (termLines - 3)
+        Just (termLines, _) | termLines < numLines + 3 -> do
+          let actual = max 1 (termLines - 3)
+          errorConcurrent
+            $  "Warning: output is too small, only showing "
+            ++ show actual
+            ++ " lines!\n"
+          pure actual
+        _ -> pure numLines
       (lastLine, ecMay) <- displayConsoleRegions $ do
         initialState <- do
           startTime <- getTime RealtimeCoarse
@@ -569,7 +580,7 @@ main = B.mainFromCmdParser $ do
                                     in  if length full < 80 then full else head rest
                                   [labelStr] -> labelStr
                                   _          -> error "too many labels!"
-              , c_lines       = numLines
+              , c_lines       = adjustedNumLines
               , c_keepStdout  = if
                                   | stdoutCheckCount > 1 -> error
                                     "too many keep/drop/conflate for stdout!"
